@@ -155,22 +155,131 @@ public class ReviewServiceTest {
                 .approvalCount(2)
                 .approved(false)
                 .build();
-        
+
         // when
         Review updatedReview = reviewService.updateApprovalStatus(unapprovedReview);
-        
+
         // then
         assertFalse(updatedReview.approved());
-        
+
         // when
         Review approvedReview = unapprovedReview.toBuilder()
                 .approvalCount(approvalConfiguration.minCount())
                 .build();
-        
+
         // when
         updatedReview = reviewService.updateApprovalStatus(approvedReview);
-        
+
         // then
         assertTrue(updatedReview.approved());
     }
+
+    @Test
+    void upsertFirstReviewPerPosSucceeds() {
+        // given
+        Review review = TestFixtures.getReviewFixtures().getFirst();
+        Pos pos = Objects.requireNonNull(review.pos());
+        User author = Objects.requireNonNull(review.author());
+        assertNotNull(pos.getId());
+        assertNotNull(author.getId());
+
+        // POS exists
+        when(posDataService.getById(pos.getId())).thenReturn(pos);
+        // author has not reviewed this POS before
+        when(reviewDataService.filter(pos, author)).thenReturn(List.of());
+
+        // if the fixture has an ID, the base CrudServiceImpl will validate existence
+        if (review.getId() != null) {
+            when(reviewDataService.getById(review.getId())).thenReturn(review);
+        }
+
+        when(reviewDataService.upsert(review)).thenReturn(review);
+
+        // when
+        Review result = reviewService.upsert(review);
+
+        // then
+        assertThat(result).isSameAs(review);
+        verify(posDataService).getById(pos.getId());
+        verify(reviewDataService).filter(pos, author);
+        verify(reviewDataService).upsert(review);
+    }
+
+    @Test
+    void approvalDoesNotReachQuorumKeepsUnapproved() {
+        // given
+        Review base = TestFixtures.getReviewFixtures().getFirst();
+
+        int minCount = approvalConfiguration.minCount();
+        int before = Math.max(0, minCount - 2); // ensure after increment still < minCount for typical configs
+        if (minCount <= 1) {
+            before = 0; // best effort: with minCount 0/1, the review will be approved quickly anyway
+        }
+
+        Review review = base.toBuilder()
+                .approvalCount(before)
+                .approved(false)
+                .build();
+
+        // choose a user that is not the author
+        List<User> users = TestFixtures.getUserFixtures();
+        User user = users.stream()
+                .filter(u -> u.getId() != null && !u.getId().equals(review.author().getId()))
+                .findFirst()
+                .orElseGet(users::getLast);
+
+        assertNotNull(user.getId());
+        when(userDataService.getById(user.getId())).thenReturn(user);
+
+        Objects.requireNonNull(review.getId());
+        Review stored = review.toBuilder().build();
+        when(reviewDataService.getById(review.getId())).thenReturn(stored);
+
+        when(reviewDataService.upsert(any(Review.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // when
+        Review result = reviewService.approve(review, user.getId());
+
+        // then
+        assertFalse(result.approved());
+        verify(reviewDataService).upsert(any(Review.class));
+    }
+
+    @Test
+    void approvalReachesQuorumMarksApproved() {
+        // given
+        Review base = TestFixtures.getReviewFixtures().getFirst();
+
+        int minCount = approvalConfiguration.minCount();
+        int before = Math.max(0, minCount - 1); // after increment => >= minCount
+
+        Review review = base.toBuilder()
+                .approvalCount(before)
+                .approved(false)
+                .build();
+
+        // choose a user that is not the author
+        List<User> users = TestFixtures.getUserFixtures();
+        User user = users.stream()
+                .filter(u -> u.getId() != null && !u.getId().equals(review.author().getId()))
+                .findFirst()
+                .orElseGet(users::getLast);
+
+        assertNotNull(user.getId());
+        when(userDataService.getById(user.getId())).thenReturn(user);
+
+        Objects.requireNonNull(review.getId());
+        Review stored = review.toBuilder().build();
+        when(reviewDataService.getById(review.getId())).thenReturn(stored);
+
+        when(reviewDataService.upsert(any(Review.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // when
+        Review result = reviewService.approve(review, user.getId());
+
+        // then
+        assertTrue(result.approved());
+        verify(reviewDataService).upsert(any(Review.class));
+    }
+
 }
